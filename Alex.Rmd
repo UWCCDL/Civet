@@ -122,9 +122,8 @@ First, we need an operational definition of "change". We have four measurements 
 
 ```{r}
 data_arousal <- data %>%
-  mutate(HR_change =  (HR_after_pill + HR_post_experiment)/2 - (HR_pre_experiment + HR_before_pill)/2,
-         HRV_change = (HRV_after_pill + HRV_post_experiment)/2 - 
-           (HRV_pre_experiment + HRV_before_pill)/2) 
+  mutate(HR_change =  (HR_after_pill) - (HR_before_pill),
+         HRV_change = (HRV_after_pill) - (HRV_before_pill)/2) 
 
 data_arousal_l <- data_arousal %>%
   pivot_longer(cols = c(HR_change, HRV_change), names_to = "measure", values_to = "value") %>%
@@ -177,6 +176,7 @@ Main effect of caffeine for HR, account of individual differences in response to
 
 ```{r}
 model_arousal <- lmer(HR_change ~ caffeine + (1|day) +  (1|participant), data = data_arousal)
+tab_model(model_arousal)
 tab_model(model_arousal,
   file = paste0(table_folder, "/hr_change_by_condition.html"))
 ```
@@ -190,6 +190,7 @@ We can repeat the same analysis for HRV.
 ```{r}
 model_arousal <- lmer(HRV_change ~ caffeine + (1|day) + (1|participant), 
                       data = data_arousal)
+tab_model(model_arousal)
 tab_model(model_arousal, file = paste0(table_folder, "/hrv_change_by_condition.html"))
 ```
 Caffeine decreases HRV.
@@ -1122,27 +1123,27 @@ data_arousal <- droplevels(data_arousal)
 
 #data_arousal$FOK_reported[is.na(data_arousal$FOK_reported)] <- 0
 
-vars_needed <- c("FOK_reported", "HR_change", "pill_condition", "participant", "day")
+vars_needed <- c("FOK_reported", "TOT_reported", "HR_change", "HRV_change", "pill_condition", "participant", "day")
 data_arousal <- data_arousal[complete.cases(data_arousal[, vars_needed]), ]
 
 data_arousal$pill_condition <- factor(data_arousal$pill_condition, 
                                         levels = c("Placebo", "Caffeine"))
 
 # Step 1: X → M  (caffeine predicts arousal)
-model_m <- glmer(HR_change ~ pill_condition +  (1|participant),
+model_m <- glmer(HRV_change ~ pill_condition +  (1|participant),
                 data = data_arousal)
 
 
 
 # Step 2: X + M → Y  (both predict memory, controlling for each other)
-model_y <- glmer(FOK_reported ~ pill_condition + HR_change + (1|participant),
+model_y <- glmer(FOK_reported ~ pill_condition + HRV_change + (1|participant),
                  family = "binomial", data = data_arousal)
 
 
 # Test model_m alone
 test_m <- mediate(model_m, model_y,
                   treat = "pill_condition",
-                  mediator = "HR_change",
+                  mediator = "HRV_change",
                   treat.value = "Caffeine",
                   control.value = "Placebo",
                   sims = 5)  # just 5 sims to test quickly
@@ -1152,7 +1153,7 @@ med_result <- mediate(
     model_m,          # mediator model
     model_y,          # outcome model
     treat  = "pill_condition",  # adjust to your treatment variable
-    mediator = "HR_change",
+    mediator = "HRV_change",
     treat.value   = "Caffeine",   # adjust to your condition label
     control.value = "Placebo",    # adjust to your reference level
     robustSE = TRUE,
