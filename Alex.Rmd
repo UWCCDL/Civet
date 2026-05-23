@@ -1,0 +1,1164 @@
+---
+title: "Alex data"
+date: "2026-05-16"
+output:
+  html_document:
+    code_folding: hide
+    theme: yeti
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  word_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(tidyverse)
+library(dplyr)
+library(broom)
+library(reshape2)
+library(glmnet)
+library(readr)
+
+# Graphics
+library(ggplot2)
+library(ggthemes)
+library(ggrepel)
+library(ppcor)
+library(ggExtra)
+library(ggsci)
+library(viridis)
+library(scales)
+library(rlang) # Mutli-plot legend
+library(patchwork)# Multi-plot alignment
+library(stringr) # Added to make interactive graphs; use different txt funcs
+library(extrafont) # Added to make interactive graphs; change font on graphs
+library(cowplot)
+library(gridExtra)
+
+# Tables
+library(kableExtra)
+library(xtable)
+
+# MLM
+library(lme4)
+library(lmerTest)
+library(sjPlot)
+# Colors
+library(ggsci)
+```
+
+# Save graphs
+
+```{r}
+graph_folder <- "./r_graphs"
+```
+
+# Save table
+```{r}
+table_folder <- "./r_table"
+```
+
+# Load data
+
+```{r}
+data <- read_csv("./combined_data.csv")
+```
+
+For statistical analysis with linear models, we want to code caffeine as the main effect (= 1,  vs. Placebo = 0).
+
+```{r}
+data <- data %>%
+  mutate(caffeine = if_else(pill_condition == "Caffeine", 1, 0))
+```
+
+```{r}
+dir.create(graph_folder, showWarnings = FALSE)
+dir.create(table_folder, showWarnings = FALSE)
+
+data_memory <- data %>%
+  group_by(participant, pill_condition) %>%
+  summarise(
+    FOK = mean(FOK_reported, na.rm = TRUE),
+    TOT = mean(TOT_reported, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(FOK, TOT),
+    names_to = "memory_measure",
+    values_to = "reported"
+  )
+
+data_partial <- data %>%
+  group_by(participant, pill_condition) %>%
+  summarise(
+    Partial_Retrieval = mean(firstletter_name_retrieval_correctness, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+data_recognition <- data %>%
+  group_by(participant, pill_condition) %>%
+  summarise(
+    Recognition = mean(full_name_recognition_correctness, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+relationship_partial_graph <- data_memory %>%
+  left_join(data_partial, by = c("participant", "pill_condition"))
+
+relationship_recognition_graph <- data_memory %>%
+  left_join(data_recognition, by = c("participant", "pill_condition"))
+```
+
+
+## Analysis: overall arousal change by conditions
+
+First, we need an operational definition of "change". We have four measurements in each sessions of the experiment: before the experiment starts, before the pill is taken, after the pill is taken, and after the experiment ends. We can take the average of the two measurements before the experiment (before pill and before experiment) and the average of the two measurements after the experiment (after pill and after experiment) and then calculate the change as the difference between these two averages.
+
+```{r}
+data_arousal <- data %>%
+  mutate(HR_change =  (HR_after_pill + HR_post_experiment)/2 - (HR_pre_experiment + HR_before_pill)/2,
+         HRV_change = (HRV_after_pill + HRV_post_experiment)/2 - 
+           (HRV_pre_experiment + HRV_before_pill)/2) 
+
+data_arousal_l <- data_arousal %>%
+  pivot_longer(cols = c(HR_change, HRV_change), names_to = "measure", values_to = "value") %>%
+  mutate(measure = recode(measure,
+                          "HR_change" = "Heart Rate", 
+                          "HRV_change" = "Heart Rate Variability")) %>%
+  group_by(participant, day, caffeine, measure, pill_condition) %>%
+  summarise(value = mean(value, na.rm = TRUE), .groups = "drop") 
+
+data_arousal_l$pill_condition <- factor(data_arousal_l$pill_condition, 
+                                        levels = c("Placebo", "Caffeine"))
+```
+
+
+### Visualization
+
+Now, we can visualize the results. Each line represents a participant, the points and error bars represent the mean and standard error across participants for each condition, and the facets show the two different measures of arousal (HR and HRV).
+
+```{r}
+data_arousal_l %>%
+  ggplot(aes(x = pill_condition, y = value, color = measure)) +
+  geom_line(aes(group=participant), alpha=0.3) +
+  stat_summary(fun = mean, geom = "line", aes(group=measure), size=1.5) +
+  stat_summary(fun = mean, geom = "point", aes(group=measure), size=3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", aes(group=measure), width=0.2) +
+  facet_wrap(~measure, scales = "free_y") +
+  scale_x_discrete(expand = expansion(add = 0.25)) +# Adjust 'add' value to stretch
+  labs(x = "Condition", 
+       y = "Change in Arousal (Post - Pre)", 
+       title = "Arousal Measures by Caffeine Condition") +
+  theme_minimal() +
+  scale_color_d3()
+ggsave(
+  file.path(graph_folder, "r_overall_arousal_change.png"),
+  width = 6,
+  height = 4,
+  dpi = 400
+)
+```
+
+### Statistical Analysis
+
+To analoyze the data, we are going to use a linear mixed model (lmer) with caffeine as the main effect and random intercepts for day and participant.
+
+The general model for analysis is to include random factors for the measurement day (1 or 2; this accounts for participants noticing whether they have caffeine or placebo) and for the participant (account for individual differences in baseline arousal and response to caffeine).
+
+#### Effects on HR
+
+Main effect of caffeine for HR, account of individual differences in response to caffeine.
+
+```{r}
+model_arousal <- lmer(HR_change ~ caffeine + (1|day) +  (1|participant), data = data_arousal)
+tab_model(model_arousal,
+  file = paste0(table_folder, "/hr_change_by_condition.html"))
+```
+
+Caffeine has a small positive effect on HR.
+
+#### Effect on HRV
+
+We can repeat the same analysis for HRV. 
+
+```{r}
+model_arousal <- lmer(HRV_change ~ caffeine + (1|day) + (1|participant), 
+                      data = data_arousal)
+tab_model(model_arousal, file = paste0(table_folder, "/hrv_change_by_condition.html"))
+```
+Caffeine decreases HRV.
+
+
+## Analysis: FOK/TOT report by condition
+### Visualization
+```{r}
+data_memory %>%
+  ggplot(aes(x = pill_condition, y = reported, color = memory_measure)) +
+  geom_line(aes(group=participant), alpha=0.3) +
+  stat_summary(fun = mean, geom = "line", aes(group=memory_measure), size=1.5) +
+  stat_summary(fun = mean, geom = "point", aes(group=memory_measure), size=3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", aes(group=memory_measure), width=0.2) +
+  facet_wrap(~memory_measure, scales = "free_y") +
+  scale_x_discrete(expand = expansion(add = 0.25)) +
+  labs(
+    x = "Condition",
+    y = "Mean Reporting Rate",
+    title = "FOK/TOT Reporting by Pill Condition"
+  ) +
+  theme_minimal() +
+  scale_color_d3()
+
+ggsave(
+  file.path(graph_folder, "r_fok_tot_by_condition.png"),
+  width = 6,
+  height = 4,
+  dpi = 400
+)
+```
+
+
+
+### Statistical Analysis
+
+Both FOK and TOT are binary outcomes (reported or not reported), so we will use a logistic regression model (glmer) for the analysis.
+
+As before, the model will include caffeine as the main effect and random intercepts for day and participant to account for individual differences in memory performance and potential effects of the day of measurement.
+
+We need to separate models for FOK and TOT because they are different measures of memory.
+
+Here are the results for FOK:
+
+```{r}
+model_fok <- glmer(FOK_reported ~ caffeine + (1|day) + (1|participant), 
+                   data = data, 
+                   family = binomial)
+tab_model(model_fok, file = paste0(table_folder, "/fok_report_by_condition.html"))
+```
+
+And here for TOT:
+
+```{r}
+model_tot <- glmer(TOT_reported ~ caffeine + (1|day) + (1|participant), 
+                   data = data, 
+                   family = binomial)
+tab_model(model_tot, file = paste0(table_folder, "/tot_report_by_condition.html"))
+```
+
+
+## Analysis: HR/HRV relationship with FOK/TOT reports
+### Visualization
+```{r}
+data %>%
+  dplyr::select(
+    participant,
+    day,
+    caffeine,
+    pill_condition,
+    HR_after_pill,
+    HRV_after_pill
+  ) %>%
+  pivot_longer(
+    cols = c(HR_after_pill, HRV_after_pill),
+    names_to = "arousal_measure",
+    values_to = "value"
+  ) %>%
+  mutate(
+    arousal_measure = recode(
+      arousal_measure,
+      HR_after_pill = "Heart Rate",
+      HRV_after_pill = "Heart Rate Variability"
+    )
+  ) %>%
+    left_join(
+      data_memory,
+      by = c("participant", "pill_condition")
+    )%>%
+  ggplot(aes(
+    x = value,
+    y = reported,
+    color = memory_measure,
+    fill = memory_measure
+  )) +
+  geom_point(size = 3, alpha = 0.8) +
+  stat_smooth(method = "lm", se = TRUE, linewidth = 1.5) +
+  facet_wrap(~arousal_measure, scales = "free_x") +
+  scale_color_d3() +
+  scale_fill_d3() +
+  labs(
+    x = NULL,
+    y = "reported",
+    color = "memory_measure",
+    fill = "memory_measure"
+  ) +
+  theme_minimal()
+
+ggsave(
+  file.path(graph_folder, "r_arousal_fok_tot_relationship.png"),
+  width = 7,
+  height = 5,
+  dpi = 400
+)
+```
+
+
+## Analysis: memory performance by condition
+### Visualization
+```{r}
+data_accuracy <- data %>%
+  group_by(participant, pill_condition) %>%
+  summarise(
+    Partial_Retrieval = mean(firstletter_name_retrieval_correctness, na.rm = TRUE),
+    Recognition = mean(full_name_recognition_correctness, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    cols = c(Partial_Retrieval, Recognition),
+    names_to = "accuracy_measure",
+    values_to = "accuracy"
+  )
+
+data_accuracy %>%
+  ggplot(aes(
+    x = pill_condition,
+    y = accuracy,
+    color = accuracy_measure
+  )) +
+
+  geom_line(aes(group=participant), alpha=0.3) +
+
+  stat_summary(
+    fun = mean,
+    geom = "line",
+    aes(group=accuracy_measure),
+    size=1.5
+  ) +
+
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    aes(group=accuracy_measure),
+    size=3
+  ) +
+
+  stat_summary(
+    fun.data = mean_se,
+    geom = "errorbar",
+    aes(group=accuracy_measure),
+    width=0.2
+  ) +
+
+  facet_wrap(~accuracy_measure, scales = "free_y") +
+
+  scale_x_discrete(expand = expansion(add = 0.25)) +
+
+  scale_color_d3() +
+
+  labs(
+    x = "Condition",
+    y = "Mean Accuracy",
+    title = "Partial Retrieval and Recognition Accuracy by Pill Condition"
+  ) +
+
+  theme_minimal()
+
+ggsave(
+  file.path(graph_folder, "r_memory_by_condition.png"),
+  width = 6,
+  height = 4,
+  dpi = 400
+)
+```
+
+### Statistic Analysis
+#### for partial retrieval
+```{r}
+model_partial_correct <- glmer(
+  firstletter_name_retrieval_correctness ~ caffeine +
+    (1|participant) + (1|day),
+  data = data,
+  family = binomial
+)
+tab_model(model_partial_correct, file = paste0(table_folder, "/partial_retrieval_by_condition.html"))
+```
+
+#### for recognition
+```{r}
+model_recognition_correct <- glmer(
+  full_name_recognition_correctness ~ caffeine +
+    (1|participant) + (1|day),
+  data = data,
+  family = binomial
+)
+tab_model(model_recognition_correct, file = paste0(table_folder, "/recognition_by_condition.html"))
+```
+
+
+## Analysis: FOK/TOT reaction time by condition
+### Visualization
+```{r}
+data_rt_memory <- data %>%
+  group_by(participant, pill_condition) %>%
+  summarise(
+    FOK_RT = mean(FOK_RT, na.rm = TRUE),
+    TOT_RT = mean(TOT_RT, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    cols = c(FOK_RT, TOT_RT),
+    names_to = "rt_measure",
+    values_to = "reaction_time"
+  )
+
+data_rt_memory %>%
+  ggplot(aes(
+    x = pill_condition,
+    y = reaction_time,
+    color = rt_measure
+  )) +
+
+  geom_line(aes(group=participant), alpha=0.3) +
+
+  stat_summary(
+    fun = mean,
+    geom = "line",
+    aes(group=rt_measure),
+    size=1.5
+  ) +
+
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    aes(group=rt_measure),
+    size=3
+  ) +
+
+  stat_summary(
+    fun.data = mean_se,
+    geom = "errorbar",
+    aes(group=rt_measure),
+    width=0.2
+  ) +
+
+  facet_wrap(~rt_measure, scales = "free_y") +
+
+  scale_x_discrete(expand = expansion(add = 0.25)) +
+
+  scale_color_d3() +
+
+  labs(
+    x = "Condition",
+    y = "Reaction Time (s)",
+    title = "FOK/TOT Reaction Time by Pill Condition"
+  ) +
+
+  theme_minimal()
+
+ggsave(
+  file.path(graph_folder, "r_fok_tot_rt_by_condition.png"),
+  width = 6,
+  height = 4,
+  dpi = 400
+)
+```
+### Statistic Analysis
+#### for FOK
+```{r}
+model_fok_rt <- lmer(
+  FOK_RT ~ caffeine + (1|participant) + (1|day),
+  data = data
+)
+tab_model(model_fok_rt, file = paste0(table_folder, "/fok_rt_by_condition.html"))
+```
+
+#### for TOT
+```{r}
+model_tot_rt <- lmer(
+  TOT_RT ~ caffeine + (1|participant) + (1|day),
+  data = data
+)
+
+tab_model(model_tot_rt, file = paste0(table_folder, "/tot_rt_by_condition.html"))
+```
+
+
+## Analysis: memory reaction time by condition
+### Visualization
+```{r}
+data_rt_accuracy <- data %>%
+  group_by(participant, pill_condition) %>%
+  summarise(
+    Partial_Retrieval_RT = mean(firstletter_name_retrieval_RT, na.rm = TRUE),
+    Recognition_RT = mean(full_name_recognition_RT, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    cols = c(Partial_Retrieval_RT, Recognition_RT),
+    names_to = "rt_measure",
+    values_to = "reaction_time"
+  )
+
+data_rt_accuracy %>%
+  ggplot(aes(
+    x = pill_condition,
+    y = reaction_time,
+    color = rt_measure
+  )) +
+
+  geom_line(aes(group=participant), alpha=0.3) +
+
+  stat_summary(
+    fun = mean,
+    geom = "line",
+    aes(group=rt_measure),
+    size=1.5
+  ) +
+
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    aes(group=rt_measure),
+    size=3
+  ) +
+
+  stat_summary(
+    fun.data = mean_se,
+    geom = "errorbar",
+    aes(group=rt_measure),
+    width=0.2
+  ) +
+
+  facet_wrap(~rt_measure, scales = "free_y") +
+
+  scale_x_discrete(expand = expansion(add = 0.25)) +
+
+  scale_color_d3() +
+
+  labs(
+    x = "Condition",
+    y = "Reaction Time (s)",
+    title = "Partial Retrieval and Recognition RT by Pill Condition"
+  ) +
+
+  theme_minimal()
+
+ggsave(
+  file.path(graph_folder, "r_memory_rt_by_condition.png"),
+  width = 6,
+  height = 4,
+  dpi = 400
+)
+```
+### Statistic Analysis
+#### for partial retrieval
+```{r}
+model_partial_rt <- lmer(
+  firstletter_name_retrieval_RT ~ caffeine +
+    (1|participant) + (1|day),
+  data = data
+)
+
+tab_model(model_partial_rt, file = paste0(table_folder, "/partial_retrieval_rt_by_condition.html"))
+```
+#### for recognition
+```{r}
+model_recognition_rt <- lmer(
+  full_name_recognition_RT ~ caffeine +
+    (1|participant) + (1|day),
+  data = data
+)
+
+tab_model(model_recognition_rt, file = paste0(table_folder, "/recognition_rt_by_condition.html"))
+```
+
+## Analysis: Effect of Practice Repetition on FOK/TOT Reporting
+```{r}
+data <- data %>%
+  mutate(study_repetition = as.factor(study_repetition))
+```
+
+### Visualization
+
+```{r}
+data <- data %>%
+  mutate(study_repetition = relevel(as.factor(study_repetition), ref = "2"))
+
+data_memory_repetition <- data %>%
+  group_by(participant, study_repetition) %>%
+  summarise(
+    FOK = mean(FOK_reported, na.rm = TRUE),
+    TOT = mean(TOT_reported, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    cols = c(FOK, TOT),
+    names_to = "memory_measure",
+    values_to = "reported"
+  )
+
+data_memory_repetition %>%
+  ggplot(aes(x = study_repetition, y = reported, color = memory_measure)) +
+  geom_line(aes(group = participant), alpha=0.3) +
+  stat_summary(fun = mean, geom = "line", aes(group=memory_measure), size=1.5) +
+  stat_summary(fun = mean, geom = "point", aes(group=memory_measure), size=3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", aes(group=memory_measure), width=0.2) +
+  facet_wrap(~memory_measure, scales = "free_y") +
+  labs(
+    x = "Practice Repetition",
+    y = "Mean Reporting Rate",
+    title = "FOK/TOT Reporting by Practice Repetition"
+  ) +
+  theme_minimal() +
+  scale_color_d3()
+
+ggsave(
+  file.path(graph_folder, "r_fok_tot_by_repetition.png"),
+  width = 6,
+  height = 4,
+  dpi = 400
+)
+```
+
+### Statistical Analysis
+#### FOK Reporting by Practice Repetition 4 times against 2 times as base
+```{r}
+model_fok_repetition <- glmer(
+  FOK_reported ~ study_repetition + (1|participant) + (1|day),
+  data = data,
+  family = binomial
+)
+
+tab_model(model_fok_repetition, file = paste0(table_folder, "/fok_report_by_practice_repetition.html"))
+```
+
+#### TOT Reporting by Practice Repetition 4 times against 2 times as base
+```{r}
+model_tot_repetition <- glmer(
+  TOT_reported ~ study_repetition + (1|participant) + (1|day),
+  data = data,
+  family = binomial
+)
+
+tab_model(model_tot_repetition, file = paste0(table_folder, "/tot_report_by_practice_repetition.html"))
+```
+
+
+
+## Analysis: Effect of Practice Repetition on Partial Retrieval and Recognition Accuracy
+### Visualization
+```{r}
+data_accuracy_repetition <- data %>%
+  group_by(participant, study_repetition) %>%
+  summarise(
+    Partial_Retrieval = mean(firstletter_name_retrieval_correctness, na.rm = TRUE),
+    Recognition = mean(full_name_recognition_correctness, na.rm = TRUE)
+  ) %>%
+  pivot_longer(
+    cols = c(Partial_Retrieval, Recognition),
+    names_to = "accuracy_measure",
+    values_to = "accuracy"
+  )
+
+data_accuracy_repetition %>%
+  ggplot(aes(x = study_repetition, y = accuracy, color = accuracy_measure)) +
+  geom_line(aes(group = participant), alpha=0.3) +
+  stat_summary(fun = mean, geom = "line", aes(group=accuracy_measure), size=1.5) +
+  stat_summary(fun = mean, geom = "point", aes(group=accuracy_measure), size=3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", aes(group=accuracy_measure), width=0.2) +
+  facet_wrap(~accuracy_measure, scales = "free_y") +
+  labs(
+    x = "Practice Repetition",
+    y = "Mean Accuracy",
+    title = "Partial Retrieval and Recognition Accuracy by Practice Repetition"
+  ) +
+  theme_minimal() +
+  scale_color_d3()
+
+ggsave(
+  file.path(graph_folder, "r_memory_by_repetition.png"),
+  width = 6,
+  height = 4,
+  dpi = 400
+)
+```
+
+### Statistical Analysis
+
+#### Partial retrieval accuracy by Practice Repetition 4 times against 2 times as base 
+```{r}
+model_partial_repetition <- glmer(
+  firstletter_name_retrieval_correctness ~ study_repetition + (1|participant) + (1|day),
+  data = data,
+  family = binomial
+)
+
+tab_model(model_partial_repetition, file = paste0(table_folder, "/partial_retrieval_accuracy_by_practice_repetition.html"))
+```
+
+#### Recognition accuracy by Practice Repetition 4 times against 2 times as base 
+```{r}
+model_recognition_repetition <- glmer(
+  full_name_recognition_correctness ~ study_repetition + (1|participant) + (1|day),
+  data = data,
+  family = binomial
+)
+
+tab_model(model_recognition_repetition, file = paste0(table_folder, "/recognition_accuracy_by_practice_repetition.html"))
+```
+
+
+## Analysis: FOK and TOTs' relation to recognition accuracy
+```{r}
+data_fok_vs_none_overall <- data %>%
+  filter(
+    (FOK_reported == 1 & TOT_reported == 0) |
+    (FOK_reported == 0 & TOT_reported == 0)
+  ) %>%
+  mutate(
+    memory_state = ifelse(
+      FOK_reported == 1 & TOT_reported == 0,
+      "FOK-only",
+      "None"
+    )
+  )
+
+data_tot_vs_none_overall <- data %>%
+  filter(
+    TOT_reported == 1 |
+    (FOK_reported == 0 & TOT_reported == 0)
+  ) %>%
+  mutate(
+    memory_state = ifelse(
+      TOT_reported == 1,
+      "TOT",
+      "None"
+    )
+  )
+
+data_fok_tot_vs_none_overall <- bind_rows(
+  data_fok_vs_none_overall %>%
+    group_by(participant, memory_state) %>%
+    summarise(
+      Recognition = mean(full_name_recognition_correctness, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(comparison = "FOK-only vs None"),
+
+  data_tot_vs_none_overall %>%
+    group_by(participant, memory_state) %>%
+    summarise(
+      Recognition = mean(full_name_recognition_correctness, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(comparison = "TOT vs None")
+) %>%
+  mutate(
+    memory_state = factor(memory_state, levels = c("FOK-only", "TOT", "None")),
+    comparison = factor(comparison, levels = c("FOK-only vs None", "TOT vs None"))
+  )
+```
+### Visualization: FOK-only and TOT compared with no metacognitive report overall
+```{r}
+data_fok_tot_vs_none_overall <- data_fok_tot_vs_none_overall %>%
+  mutate(
+    memory_state = factor(
+      memory_state,
+      levels = c("FOK-only", "TOT", "None")
+    ),
+    comparison = factor(
+      comparison,
+      levels = c("FOK-only vs None", "TOT vs None")
+    )
+  )
+
+plot_fok_tot_vs_none_overall <- data_fok_tot_vs_none_overall %>%
+  ggplot(aes(x = memory_state, y = Recognition, color = comparison)) +
+  geom_line(aes(group = interaction(participant, comparison)), alpha = 0.25) +
+  stat_summary(fun = mean, geom = "line", aes(group = comparison), linewidth = 1.5) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.1) +
+  facet_wrap(~comparison, scales = "free_x") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Recognition Accuracy by Metacognitive Report Overall",
+    x = "Metacognitive State",
+    y = "Mean Recognition Accuracy",
+    color = "Comparison"
+  ) +
+  theme_minimal()
+
+plot_fok_tot_vs_none_overall
+```
+### Statistical Analysis:
+#### FOK-only vs None
+
+```{r}
+data_fok_vs_none <- data %>%
+  filter(
+    (FOK_reported == 1 & TOT_reported == 0) |
+    (FOK_reported == 0 & TOT_reported == 0)
+  ) %>%
+  mutate(
+    memory_state = ifelse(
+      FOK_reported == 1 & TOT_reported == 0,
+      "FOK-only",
+      "None"
+    ),
+    memory_state = factor(memory_state, levels = c("None", "FOK-only"))
+  )
+
+model_fok_vs_none <- glmer(
+  full_name_recognition_correctness ~ memory_state +
+    (1|participant) + (1|day),
+  data = data_fok_vs_none,
+  family = binomial
+)
+tab_model(model_fok_vs_none)
+```
+
+#### TOT vs None
+```{r}
+data_tot_vs_none <- data %>%
+  filter(
+    TOT_reported == 1 |
+    (FOK_reported == 0 & TOT_reported == 0)
+  ) %>%
+  mutate(
+    memory_state = ifelse(
+      TOT_reported == 1,
+      "TOT",
+      "None"
+    ),
+    memory_state = factor(memory_state, levels = c("None", "TOT"))
+  )
+
+model_tot_vs_none <- glmer(
+  full_name_recognition_correctness ~ memory_state +
+    (1|participant) + (1|day),
+  data = data_tot_vs_none,
+  family = binomial
+)
+
+tab_model(model_tot_vs_none)
+```
+
+
+### Visualization: FOK-only vs TOT in recognition accuracy
+```{r}
+data_fok_vs_tot <- data %>%
+  filter(
+    (FOK_reported == 1 & TOT_reported == 0) |
+    TOT_reported == 1
+  ) %>%
+  mutate(
+    memory_state = case_when(
+      FOK_reported == 1 & TOT_reported == 0 ~ "FOK-only",
+      TOT_reported == 1 ~ "TOT"
+    ),
+    memory_state = factor(
+      memory_state,
+      levels = c("FOK-only", "TOT")
+    )
+  )
+
+fok_vs_tot_graph <- data_fok_vs_tot %>%
+  group_by(participant, memory_state) %>%
+  summarise(
+    Recognition = mean(full_name_recognition_correctness, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = memory_state, y = Recognition)) +
+  geom_line(aes(group = participant), alpha = 0.25) +
+  stat_summary(fun = mean, geom = "line", aes(group = 1), linewidth = 1.5) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.1) +
+  scale_y_continuous(limits = c(0,1)) +
+  labs(
+    title = "FOK-only vs TOT Recognition Accuracy",
+    x = "Metacognitive State",
+    y = "Mean Recognition Accuracy"
+  ) +
+  theme_minimal()
+
+fok_vs_tot_graph
+
+ggsave(
+  file.path(graph_folder, "r_fok_vs_tot_recognition.png"),
+  plot = fok_vs_tot_graph,
+  width = 5,
+  height = 4,
+  dpi = 400
+)
+```
+
+### Staticial Analysis
+```{r}
+model_fok_vs_tot <- glmer(
+  full_name_recognition_correctness ~ memory_state +
+    (1|participant) + (1|day),
+  data = data_fok_vs_tot,
+  family = binomial
+)
+
+tab_model(model_fok_vs_tot)
+```
+
+
+## Analysis: FOK and TOTs' relation to partial retrieval accuracy
+
+### Visualization: FOK-only and TOT compared with no metacognitive report overall
+```{r}
+data_fok_vs_none_partial <- data %>%
+  filter(
+    (FOK_reported == 1 & TOT_reported == 0) |
+    (FOK_reported == 0 & TOT_reported == 0)
+  ) %>%
+  mutate(
+    memory_state = ifelse(
+      FOK_reported == 1 & TOT_reported == 0,
+      "FOK-only",
+      "None"
+    ),
+    memory_state = factor(memory_state, levels = c("None", "FOK-only"))
+  )
+
+data_tot_vs_none_partial <- data %>%
+  filter(
+    TOT_reported == 1 |
+    (FOK_reported == 0 & TOT_reported == 0)
+  ) %>%
+  mutate(
+    memory_state = ifelse(
+      TOT_reported == 1,
+      "TOT",
+      "None"
+    ),
+    memory_state = factor(memory_state, levels = c("None", "TOT"))
+  )
+
+data_fok_tot_vs_none_partial_overall <- bind_rows(
+  data_fok_vs_none_partial %>%
+    group_by(participant, memory_state) %>%
+    summarise(
+      Partial_Retrieval = mean(firstletter_name_retrieval_correctness, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(comparison = "FOK-only vs None"),
+
+  data_tot_vs_none_partial %>%
+    group_by(participant, memory_state) %>%
+    summarise(
+      Partial_Retrieval = mean(firstletter_name_retrieval_correctness, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(comparison = "TOT vs None")
+) %>%
+  mutate(
+    memory_state = factor(memory_state, levels = c("FOK-only", "TOT", "None")),
+    comparison = factor(comparison, levels = c("FOK-only vs None", "TOT vs None"))
+  )
+
+plot_fok_tot_vs_none_partial_overall <- data_fok_tot_vs_none_partial_overall %>%
+  ggplot(aes(x = memory_state, y = Partial_Retrieval, color = comparison)) +
+  geom_line(aes(group = interaction(participant, comparison)), alpha = 0.25) +
+  stat_summary(fun = mean, geom = "line", aes(group = comparison), linewidth = 1.5) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.1) +
+  facet_wrap(~comparison, scales = "free_x") +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Partial Retrieval Accuracy by Metacognitive Report Overall",
+    x = "Metacognitive State",
+    y = "Mean Partial Retrieval Accuracy",
+    color = "Comparison"
+  ) +
+  theme_minimal()
+
+plot_fok_tot_vs_none_partial_overall
+
+ggsave(
+  file.path(graph_folder, "r_fok_tot_vs_none_partial_retrieval.png"),
+  plot = plot_fok_tot_vs_none_partial_overall,
+  width = 6,
+  height = 4,
+  dpi = 400
+)
+```
+
+### Statistical Analysis
+#### fok vs none
+```{r}
+model_partial_fok_vs_none <- glmer(
+  firstletter_name_retrieval_correctness ~ memory_state +
+    (1|participant) + (1|day),
+  data = data_fok_vs_none_partial,
+  family = binomial
+)
+
+tab_model(model_partial_fok_vs_none)
+```
+
+#### tot vs none
+```{r}
+model_partial_tot_vs_none <- glmer(
+  firstletter_name_retrieval_correctness ~ memory_state +
+    (1|participant) + (1|day),
+  data = data_tot_vs_none_partial,
+  family = binomial
+)
+
+tab_model(model_partial_tot_vs_none)
+```
+
+### Visualization: fok only vs tot in partial retrieval accuracy
+```{r}
+data_fok_vs_tot_partial <- data %>%
+  filter(
+    (FOK_reported == 1 & TOT_reported == 0) |
+    TOT_reported == 1
+  ) %>%
+  mutate(
+    memory_state = case_when(
+      FOK_reported == 1 & TOT_reported == 0 ~ "FOK-only",
+      TOT_reported == 1 ~ "TOT"
+    ),
+    memory_state = factor(memory_state, levels = c("FOK-only", "TOT"))
+  )
+
+fok_vs_tot_partial_graph <- data_fok_vs_tot_partial %>%
+  group_by(participant, memory_state) %>%
+  summarise(
+    Partial_Retrieval = mean(firstletter_name_retrieval_correctness, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = memory_state, y = Partial_Retrieval)) +
+  geom_line(aes(group = participant), alpha = 0.25) +
+  stat_summary(fun = mean, geom = "line", aes(group = 1), linewidth = 1.5) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.1) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "FOK-only vs TOT Partial Retrieval Accuracy",
+    x = "Metacognitive State",
+    y = "Mean Partial Retrieval Accuracy"
+  ) +
+  theme_minimal()
+
+fok_vs_tot_partial_graph
+
+ggsave(
+  file.path(graph_folder, "r_fok_vs_tot_partial_retrieval.png"),
+  plot = fok_vs_tot_partial_graph,
+  width = 5,
+  height = 4,
+  dpi = 400
+)
+```
+
+### Statistical Analylsis
+```{r}
+model_partial_fok_vs_tot <- glmer(
+  firstletter_name_retrieval_correctness ~ memory_state +
+    (1|participant) + (1|day),
+  data = data_fok_vs_tot_partial,
+  family = binomial
+)
+
+tab_model(model_partial_fok_vs_tot)
+```
+
+## Analysis: Relationship Between FOK and TOT Reporting
+
+### Visualization
+```{r}
+fok_tot_graph <- data %>%
+  group_by(participant) %>%
+  summarise(
+    FOK = mean(FOK_reported, na.rm = TRUE),
+    TOT = mean(TOT_reported, na.rm = TRUE)
+  )
+
+fok_tot_graph %>%
+  ggplot(aes(x = FOK, y = TOT)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "FOK Reporting and TOT Reporting",
+    x = "Mean FOK Reporting",
+    y = "Mean TOT Reporting"
+  ) +
+  theme_minimal()
+
+ggsave(
+  file.path(graph_folder, "r_fok_predicting_tot.png"),
+  width = 6,
+  height = 4,
+  dpi = 400
+)
+```
+
+
+
+
+## Mediation analysis
+
+Running a mediation analysis to test whether the effect of caffeine on memory is mediated by changes in arousal (HR_change). 
+
+Some caveats:
+
+  1. `HR_change` might not be the best measure of arousal, and it might not capture all the relevant changes in arousal that could mediate the effect of caffeine on memory.
+  2. The mediation analysis assumes a causal relationship between caffeine, arousal, and memory, which may not be fully justified based on the data we have. There could be other confounding variables that influence both arousal and memory, such as individual differences in sensitivity to caffeine, baseline arousal levels, or other physiological factors that we have not measured.
+  3. The sample size may not be large enough to detect a mediation effect, especially if the effect sizes are small. Mediation analysis typically requires a larger sample size than simple regression analyses to have sufficient power to detect indirect effects.
+  4. The `mediation` package cannot handle the crossed random effects structure we have in our data (random intercepts for both day and participant). This means that the results of the mediation analysis may not fully account for the variability in the data, and the estimates of the mediation effect may be biased.
+
+```{r}
+library(mediation)
+
+data_arousal <- droplevels(data_arousal)
+
+
+### Handle NAs; two possible ways
+
+#data_arousal$FOK_reported[is.na(data_arousal$FOK_reported)] <- 0
+
+vars_needed <- c("FOK_reported", "HR_change", "pill_condition", "participant", "day")
+data_arousal <- data_arousal[complete.cases(data_arousal[, vars_needed]), ]
+
+data_arousal$pill_condition <- factor(data_arousal$pill_condition, 
+                                        levels = c("Placebo", "Caffeine"))
+
+# Step 1: X → M  (caffeine predicts arousal)
+model_m <- glmer(HR_change ~ pill_condition +  (1|participant),
+                data = data_arousal)
+
+
+
+# Step 2: X + M → Y  (both predict memory, controlling for each other)
+model_y <- glmer(FOK_reported ~ pill_condition + HR_change + (1|participant),
+                 family = "binomial", data = data_arousal)
+
+
+# Test model_m alone
+test_m <- mediate(model_m, model_y,
+                  treat = "pill_condition",
+                  mediator = "HR_change",
+                  treat.value = "Caffeine",
+                  control.value = "Placebo",
+                  sims = 5)  # just 5 sims to test quickly
+
+# Step 3: Mediation analysis
+med_result <- mediate(
+    model_m,          # mediator model
+    model_y,          # outcome model
+    treat  = "pill_condition",  # adjust to your treatment variable
+    mediator = "HR_change",
+    treat.value   = "Caffeine",   # adjust to your condition label
+    control.value = "Placebo",    # adjust to your reference level
+    robustSE = TRUE,
+    sims = 1000        # bootstrap iterations
+)
+
+summary(med_result)
+
+```
