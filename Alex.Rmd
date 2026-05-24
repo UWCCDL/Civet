@@ -710,6 +710,7 @@ tab_model(model_recognition_repetition, file = paste0(table_folder, "/recognitio
 
 
 ## Analysis: FOK and TOTs' relation to recognition accuracy
+
 ```{r}
 data_fok_vs_none_overall <- data %>%
   filter(
@@ -759,7 +760,9 @@ data_fok_tot_vs_none_overall <- bind_rows(
     comparison = factor(comparison, levels = c("FOK-only vs None", "TOT vs None"))
   )
 ```
+
 ### Visualization: FOK-only and TOT compared with no metacognitive report overall
+
 ```{r}
 data_fok_tot_vs_none_overall <- data_fok_tot_vs_none_overall %>%
   mutate(
@@ -819,6 +822,7 @@ tab_model(model_fok_vs_none)
 ```
 
 #### TOT vs None
+
 ```{r}
 data_tot_vs_none <- data %>%
   filter(
@@ -846,6 +850,7 @@ tab_model(model_tot_vs_none)
 
 
 ### Visualization: FOK-only vs TOT in recognition accuracy
+
 ```{r}
 data_fok_vs_tot <- data %>%
   filter(
@@ -909,6 +914,7 @@ tab_model(model_fok_vs_tot)
 ## Analysis: FOK and TOTs' relation to partial retrieval accuracy
 
 ### Visualization: FOK-only and TOT compared with no metacognitive report overall
+
 ```{r}
 data_fok_vs_none_partial <- data %>%
   filter(
@@ -974,6 +980,7 @@ plot_fok_tot_vs_none_partial_overall <- data_fok_tot_vs_none_partial_overall %>%
     y = "Mean Partial Retrieval Accuracy",
     color = "Comparison"
   ) +
+  scale_color_d3() +
   theme_minimal()
 
 plot_fok_tot_vs_none_partial_overall
@@ -988,6 +995,7 @@ ggsave(
 ```
 
 ### Statistical Analysis
+
 #### fok vs none
 ```{r}
 model_partial_fok_vs_none <- glmer(
@@ -1001,6 +1009,7 @@ tab_model(model_partial_fok_vs_none)
 ```
 
 #### tot vs none
+
 ```{r}
 model_partial_tot_vs_none <- glmer(
   firstletter_name_retrieval_correctness ~ memory_state +
@@ -1013,6 +1022,7 @@ tab_model(model_partial_tot_vs_none)
 ```
 
 ### Visualization: fok only vs tot in partial retrieval accuracy
+
 ```{r}
 data_fok_vs_tot_partial <- data %>%
   filter(
@@ -1080,14 +1090,26 @@ fok_tot_graph <- data %>%
     TOT = mean(TOT_reported, na.rm = TRUE)
   )
 
+rtest <- fok_tot_graph %>% 
+  summarise(r = cor(FOK, TOT), p = cor.test(~ FOK + TOT)$p.value)
+
 fok_tot_graph %>%
   ggplot(aes(x = FOK, y = TOT)) +
   geom_point(size = 3) +
   geom_smooth(method = "lm", se = TRUE) +
+  coord_equal() +
   labs(
-    title = "FOK Reporting and TOT Reporting",
+    title = "Correlation Between FOK and TOT",
     x = "Mean FOK Reporting",
     y = "Mean TOT Reporting"
+  ) +
+  geom_text(
+    data = rtest,
+    aes(x = 0.5, y = 0.9, label = paste0("r = ", round(r, 2), "\np = ", round(p, 3))),
+    inherit.aes = FALSE,
+    size = 4,
+    hjust = 0.5,
+    vjust = 0.5
   ) +
   theme_minimal()
 
@@ -1099,16 +1121,18 @@ ggsave(
 )
 ```
 
-
+Is the correlation significant?
+```{r}
+```
 
 
 ## Mediation analysis
 
-Running a mediation analysis to test whether the effect of caffeine on memory is mediated by changes in arousal (HR_change). 
+Running a mediation analysis to test whether the effect of caffeine on memory is mediated by changes in arousal. Meta-memory is indexed by FOK (more sensity than TOT) and arousal is indexed by HRV change (more sensitive than HR change). 
 
 Some caveats:
 
-  1. `HR_change` might not be the best measure of arousal, and it might not capture all the relevant changes in arousal that could mediate the effect of caffeine on memory.
+  1. `HRV_change` might not be the best measure of arousal, and it might not capture all the relevant changes in arousal that could mediate the effect of caffeine on memory.
   2. The mediation analysis assumes a causal relationship between caffeine, arousal, and memory, which may not be fully justified based on the data we have. There could be other confounding variables that influence both arousal and memory, such as individual differences in sensitivity to caffeine, baseline arousal levels, or other physiological factors that we have not measured.
   3. The sample size may not be large enough to detect a mediation effect, especially if the effect sizes are small. Mediation analysis typically requires a larger sample size than simple regression analyses to have sufficient power to detect indirect effects.
   4. The `mediation` package cannot handle the crossed random effects structure we have in our data (random intercepts for both day and participant). This means that the results of the mediation analysis may not fully account for the variability in the data, and the estimates of the mediation effect may be biased.
@@ -1116,13 +1140,10 @@ Some caveats:
 ```{r}
 library(mediation)
 
+# Make sure the factor levels are set correctly 
 data_arousal <- droplevels(data_arousal)
 
-
-### Handle NAs; two possible ways
-
-#data_arousal$FOK_reported[is.na(data_arousal$FOK_reported)] <- 0
-
+# Select the corrected variables and remove rows with missing data for the mediation analysis
 vars_needed <- c("FOK_reported", "TOT_reported", "HR_change", "HRV_change", "pill_condition", "participant", "day")
 data_arousal <- data_arousal[complete.cases(data_arousal[, vars_needed]), ]
 
@@ -1146,7 +1167,7 @@ test_m <- mediate(model_m, model_y,
                   mediator = "HRV_change",
                   treat.value = "Caffeine",
                   control.value = "Placebo",
-                  sims = 5)  # just 5 sims to test quickly
+                  sims = 100)  # just 5 sims to test quickly
 
 # Step 3: Mediation analysis
 med_result <- mediate(
