@@ -122,8 +122,10 @@ First, we need an operational definition of "change". We have four measurements 
 
 ```{r}
 data_arousal <- data %>%
-  mutate(HR_change =  (HR_after_pill) - (HR_before_pill),
-         HRV_change = (HRV_after_pill) - (HRV_before_pill)/2) 
+  mutate(HR_change =  HR_after_pill  - (HR_before_pill),
+         HRV_change = HRV_after_pill - (HRV_before_pill)) 
+
+
 
 data_arousal_l <- data_arousal %>%
   pivot_longer(cols = c(HR_change, HRV_change), names_to = "measure", values_to = "value") %>%
@@ -1141,43 +1143,40 @@ Some caveats:
 library(mediation)
 
 # Make sure the factor levels are set correctly 
-data_arousal <- droplevels(data_arousal)
+data_arousal2 <- droplevels(data_arousal)
 
 # Select the corrected variables and remove rows with missing data for the mediation analysis
 vars_needed <- c("FOK_reported", "TOT_reported", "HR_change", "HRV_change", "pill_condition", "participant", "day")
-data_arousal <- data_arousal[complete.cases(data_arousal[, vars_needed]), ]
+data_arousal2 <- data_arousal2[complete.cases(data_arousal2[, vars_needed]), ]
 
-data_arousal$pill_condition <- factor(data_arousal$pill_condition, 
+data_arousal2$pill_condition <- factor(data_arousal2$pill_condition, 
                                         levels = c("Placebo", "Caffeine"))
 
-# Step 1: X → M  (caffeine predicts arousal)
-model_m <- glmer(HRV_change ~ pill_condition +  (1|participant),
-                data = data_arousal)
+data_arousal2 <- data_arousal2 %>%
+  mutate(meta = if_else(FOK_reported | TOT_reported, 1, 0),
+         arousal = HR_change + HRV_change)
 
+# Step 1: X → M  (caffeine predicts arousal)
+model_m <- glmer(arousal ~ pill_condition + (1|participant),
+                data = data_arousal2, family = "gaussian")
 
 
 # Step 2: X + M → Y  (both predict memory, controlling for each other)
-model_y <- glmer(FOK_reported ~ pill_condition + HRV_change + (1|participant),
-                 family = "binomial", data = data_arousal)
+model_y <- glmer(meta ~ pill_condition + arousal + (1|participant),
+                 family = "binomial", data = data_arousal2)
 
 
-# Test model_m alone
-test_m <- mediate(model_m, model_y,
-                  treat = "pill_condition",
-                  mediator = "HRV_change",
-                  treat.value = "Caffeine",
-                  control.value = "Placebo",
-                  sims = 100)  # just 5 sims to test quickly
 
 # Step 3: Mediation analysis
 med_result <- mediate(
     model_m,          # mediator model
     model_y,          # outcome model
     treat  = "pill_condition",  # adjust to your treatment variable
-    mediator = "HRV_change",
+    mediator = "arousal",
     treat.value   = "Caffeine",   # adjust to your condition label
     control.value = "Placebo",    # adjust to your reference level
-    robustSE = TRUE,
+    #robustSE = TRUE,
+    dropobs=T,
     sims = 1000        # bootstrap iterations
 )
 
